@@ -2693,7 +2693,6 @@ args 8 + @@ptr "-gen-ir" str-to-cstr cstreq args 16 + @@ptr "-gen-ir" str-to-cst
 else
     X64 generate-nasm-linux-x86_64
         // TODO: implement tmp-rewind for this specific usecase
-    tmp-clean
 
     tmp-end
     "nasm"c       tmp-append-ptr
@@ -2717,7 +2716,6 @@ else
       cmd-echoed
     end
 end
-    tmp-clean
   else args @@ptr "help"c cstreq if*
     program @ptr stdout usage
     0 exit
