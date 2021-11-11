@@ -88,7 +88,10 @@ const sizeof(Token) reset end
 const Op.type sizeof(u64) offset end
 const Op.operand sizeof(u64) offset end
 const Op.token sizeof(Token) offset end
+const Op.flags sizeof(u64) offset end
 const sizeof(Op) reset end
+
+const Op.EXTERN 1 end
 
 const OPS_CAP 16 1024 * end
 memory ops-count sizeof(u64) end
@@ -579,12 +582,14 @@ in
     str str-chop-one-left
   end
 end
-
+const X64 1 offset end
+const ALL_MODES reset end
 proc generate-nasm-linux-x86_64 in
   "[INFO] Generating output.asm\n" puts
 
   memory out-fd sizeof(u64) end
-
+  memory mode sizeof(u64) end
+  mode !64
   420                     // mode
   O_CREAT O_WRONLY or O_TRUNC or  // flags
   // TODO: the output file path should be based on the input file path
@@ -709,20 +714,31 @@ proc generate-nasm-linux-x86_64 in
        "    mov [ret_stack_rsp], rsp\n" out-fd @64 fputs
        "    mov rsp, rax\n"             out-fd @64 fputs
     else dup Op.type + @64 OP_RET = if*
+    dup Op.flags Op.EXTERN and cast(bool) if
+dup Op.operand cast(ptr) @Str out-fd @64 fputs
+":\n" out-fd @64 fputs
+    else
        "    mov rax, rsp\n"             out-fd @64 fputs
        "    mov rsp, [ret_stack_rsp]\n" out-fd @64 fputs
        "    add rsp, "                  out-fd @64 fputs
        dup Op.operand + @64             out-fd @64 fputu
        "\n"                             out-fd @64 fputs
        "    ret\n"                      out-fd @64 fputs
+    end
     else dup Op.type + @64 OP_CALL = if*
-       "    mov rax, rsp\n"             out-fd @64 fputs
-       "    mov rsp, [ret_stack_rsp]\n" out-fd @64 fputs
-       "    call addr_"                 out-fd @64 fputs
-       dup Op.operand + @64             out-fd @64 fputu
-       "\n"                             out-fd @64 fputs
-       "    mov [ret_stack_rsp], rsp\n" out-fd @64 fputs
-       "    mov rsp, rax\n"             out-fd @64 fputs
+       dup Op.flags Op.EXTERN and cast(bool) if
+          "call " out-fd @64 fputs
+          dup Op.operand cast(ptr) @Str out-fd @64 fputs
+          "\n" out-fd @64 fputs
+       else
+            "    mov rax, rsp\n"             out-fd @64 fputs
+            "    mov rsp, [ret_stack_rsp]\n" out-fd @64 fputs
+            "    call addr_"                 out-fd @64 fputs
+            dup Op.operand + @64             out-fd @64 fputu
+            "\n"                             out-fd @64 fputs
+            "    mov [ret_stack_rsp], rsp\n" out-fd @64 fputs
+            "    mov rsp, rax\n"             out-fd @64 fputs
+       end
     else dup Op.type + @64 OP_INTRINSIC = if*
         assert "Exhaustive handling of Intrinsics in generate-nasm-linux-x86_64"
           COUNT_INTRINSICS 43 =
@@ -2567,7 +2583,7 @@ proc main in
 
     2 nth_argv compile-file-into-ops
 
-    generate-nasm-linux-x86_64
+    X64 generate-nasm-linux-x86_64
   else dup "help"c cstreq if*
     stdout usage
     0 exit

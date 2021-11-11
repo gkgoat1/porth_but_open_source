@@ -1,0 +1,1 @@
+redo-ifchange "$1.m4" && m4 -P "$1.m4" > $3
