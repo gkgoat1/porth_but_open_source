@@ -1,8 +1,20 @@
 // In progress rewrite of ./porth.py in Porth
 
 // TODO: support for include path searching
+m4_changequote([<,>])
 include "std/std.porth"
-
+m4_ifdef([<USE_TLSF>],[<
+include "std/tlsf.porth"
+memory heap 640K end
+memory heapidx sizeof(ptr) end
+heapidx heap 640000 tlsf::new !ptr
+proc malloc int -- ptr in
+heapidx @ptr swap tlsf::malloc
+end
+proc free ptr -- in
+heapidx @ptr swap tlsf::free
+end
+>])
 const OP_PUSH_INT        1 offset end
 const OP_PUSH_LOCAL_MEM  1 offset end
 const OP_PUSH_GLOBAL_MEM 1 offset end
@@ -135,6 +147,23 @@ proc push-op
   ptr // token
 in
   memory op sizeof(Op) end
+  sizeof(Token) swap op Op.token + memcpy drop
+  op Op.operand + !int
+  op Op.type + !int
+
+  sizeof(Op) op OPS_CAP ops ops-count append-item lnot if
+    here eputs ": ERROR: ops overflow\n" eputs 1 exit
+  end
+  drop
+end
+proc push-op-f
+  int // type
+  int // operand
+  int
+  ptr // token
+in
+  memory op sizeof(Op) end
+  swap op Op.flags + !int
   sizeof(Token) swap op Op.token + memcpy drop
   op Op.operand + !int
   op Op.type + !int
@@ -1018,25 +1047,6 @@ dup Op.operand cast(ptr) @Str out-fd @64 fputs
 
   out-fd @64 close drop
 
-  memory nasm-argv sizeof(ptr) 4 * end
-  "nasm"c          nasm-argv 0 8 * + !64
-  "-felf64"c       nasm-argv 1 8 * + !64
-  "output.asm"c    nasm-argv 2 8 * + !64
-  NULL             nasm-argv 3 8 * + !64
-  nasm-argv cmd-echoed
-
-  memory ld-argv sizeof(ptr) 5 * end
-  "ld"c          ld-argv 0 8 * + !64
-  "-o"c          ld-argv 1 8 * + !64
-  "output"c      ld-argv 2 8 * + !64
-  "output.o"c    ld-argv 3 8 * + !64
-  NULL           ld-argv 4 8 * + !64
-  ld-argv cmd-echoed
-
-  memory output-argv sizeof(ptr) 2 * end
-  "./output"c output-argv 0 8 * + !64
-  NULL        output-argv 1 8 * + !64
-  output-argv cmd-echoed
 end
 
 // TODO: implement reusable stack data structure
@@ -2188,6 +2198,14 @@ proc compile-file-into-ops ptr in
         dup @Str "if" streq if
           ops-count @64 parse-block-stack-push
           OP_IF 0 token push-op
+        else dup @Str "extern" if*
+          memory x sizeof(Token) end
+          x lexer lexer-next-token
+          Op.EXTERN OP_RET x Token.value + x push-op-f
+        else dup @Str "call-extern" if*
+          memory x sizeof(Token) end
+          x lexer lexer-next-token
+          Op.EXTERN OP_CALL x Token.value + x push-op-f
         else dup @Str "if*" streq if*
           parse-block-stack-top lnot if
             token Token.loc + eputloc ": ERROR: `if*` can only come after `else`, but found nothing\n" eputs
@@ -2598,6 +2616,32 @@ proc main in
     args @@ptr compile-file-into-ops
 
     X64 generate-nasm-linux-x86_64
+        // TODO: implement tmp-rewind for this specific usecase
+    tmp-clean
+
+    tmp-end
+    "nasm"c       tmp-append-ptr
+    "-felf64"c    tmp-append-ptr
+    "output.asm"c tmp-append-ptr
+    NULL          tmp-append-ptr
+    cmd-echoed
+
+    tmp-end
+    "ld"c         tmp-append-ptr
+    "-o"c         tmp-append-ptr
+    "output"c     tmp-append-ptr
+    "output.o"c   tmp-append-ptr
+    NULL          tmp-append-ptr
+    cmd-echoed
+
+    run @bool if
+      tmp-end
+      "./output"c tmp-append-ptr
+      NULL        tmp-append-ptr
+      cmd-echoed
+    end
+
+    tmp-clean
   else args @@ptr "help"c cstreq if*
     program @ptr stdout usage
     0 exit

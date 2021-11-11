@@ -1,0 +1,9 @@
+proc tlsf::new ptr int -- ptr in
+call-extern tlsf_create_with_pool
+end
+proc tlsf::malloc ptr int -- ptr in
+call-extern tlsf_malloc
+end
+proc tlsf::free ptr ptr in
+call-extern tlsf_free
+end
