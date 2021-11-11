@@ -655,7 +655,19 @@ in
     1 -
   end drop
 end
-
+proc memdmp int ptr int in
+memory out sizeof(int) end
+memory src sizeof(ptr) end
+memory buf 1 end
+out !64
+src !64
+while dup 0 > do
+    src @ptr @8 buf !8
+    out !64 buf 1 fputs
+    src inc64
+    1 -
+  end drop
+end
 proc memset
   int // size
   int // byte

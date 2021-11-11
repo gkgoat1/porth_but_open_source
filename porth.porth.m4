@@ -14,7 +14,19 @@ end
 proc free ptr -- in
 heapidx @ptr swap tlsf::free
 end
+proc strdup int ptr -- int ptr int ptr in 
+2dup drop swap dup malloc
+end
 >])
+m4_ifdef([<USE_DL>],[<
+proc dlopen int ptr -- ptr in
+str-to-cstr call-extern dlopen
+end
+proc dlsym ptr int ptr int ptr -- ptr in
+str-to-cstr rot str-to-cstr swap call-extern dlvsym
+end
+>])
+m4_define([<scall>],[<call-extern-raw null>])
 const OP_PUSH_INT        1 offset end
 const OP_PUSH_LOCAL_MEM  1 offset end
 const OP_PUSH_GLOBAL_MEM 1 offset end
@@ -104,6 +116,7 @@ const Op.flags sizeof(u64) offset end
 const sizeof(Op) reset end
 
 const Op.EXTERN 1 end
+const Op.RAW 2 end
 
 const OPS_CAP 16 1024 * end
 memory ops-count sizeof(u64) end
@@ -225,7 +238,7 @@ proc tmp-utos
   int ptr
 in
   memory buffer sizeof(ptr) end
-  PUTU_BUFFER_CAP tmp-alloc buffer !ptr
+  PUTU_BUFFER_CAP m4_ifdef([<USE_TLSF>],malloc,tmp-alloc) buffer !ptr
 
   dup 0 = if
     drop
@@ -252,17 +265,21 @@ proc strbuf-loc
   int ptr
 in
   memory start sizeof(ptr) end
+  memory a sizeof(ptr) end
+  memory b sizeof(ptr) end
   strbuf-end start !ptr
 
   dup Loc.file-path + @Str   strbuf-append-str
   ":"                        strbuf-append-str
-  dup Loc.row + @64 tmp-utos strbuf-append-str
+  dup Loc.row + @64 tmp-utos dup a !ptr strbuf-append-str
   ":"                        strbuf-append-str
-  dup Loc.col + @64 tmp-utos strbuf-append-str
+  dup Loc.col + @64 tmp-utos dup b !ptr strbuf-append-str
   drop
 
   strbuf-end start @ptr -
   start @ptr
+  m4_ifdef([<USE_TLSF>],a @ptr free)
+  m4_ifdef([<USE_TLSF>],b @ptr free)
 end
 
 const INTRINSIC_PLUS      1 offset end
@@ -678,7 +695,6 @@ proc generate-nasm-linux-x86_64 in
     dup sizeof(Op) * ops +
 
     assert "Exhaustive handling of Op types in generate-nasm-linux-x86_64" COUNT_OPS 16 = end
-
     "addr_" out-fd @64 fputs
     over    out-fd @64 fputu
     ":\n"   out-fd @64 fputs
@@ -756,9 +772,13 @@ dup Op.operand cast(ptr) @Str out-fd @64 fputs
     end
     else dup Op.type + @64 OP_CALL = if*
        dup Op.flags Op.EXTERN and cast(bool) if
-          "call " out-fd @64 fputs
-          dup Op.operand cast(ptr) @Str out-fd @64 fputs
-          "\n" out-fd @64 fputs
+        dup Op.flags Op.RAW and cast(bool) if
+        "pop rbx \n call rbx\n" out-fd @64 fputs
+        else
+            "call " out-fd @64 fputs
+            dup Op.operand cast(ptr) @Str out-fd @64 fputs
+            "\n" out-fd @64 fputs
+          end
        else
             "    mov rax, rsp\n"             out-fd @64 fputs
             "    mov rsp, [ret_stack_rsp]\n" out-fd @64 fputs
@@ -772,7 +792,9 @@ dup Op.operand cast(ptr) @Str out-fd @64 fputs
         assert "Exhaustive handling of Intrinsics in generate-nasm-linux-x86_64"
           COUNT_INTRINSICS 43 =
         end
-
+        dup Op.flags Op.EXTERN and cast(bool) if
+        m4_ifdef([<USE_DL>],dup out-fd dup Op.operand + @Str dlopen "intrinsic" "1.0" dlsym scall)
+        else
         dup Op.operand + @64
         dup INTRINSIC_PLUS = if
             "    pop rax\n"             out-fd @64 fputs
@@ -1009,6 +1031,7 @@ dup Op.operand cast(ptr) @Str out-fd @64 fputs
           here eputs ": unreachable.\n" eputs
           1 exit
         end
+        end
         drop
     else
       here eputs ": unreachable.\n" eputs
@@ -1052,7 +1075,11 @@ end
 // TODO: implement reusable stack data structure
 const SIM_STACK_CAP 1024 end
 memory sim-stack-count sizeof(u64) end
-memory sim-stack sizeof(u64) SIM_STACK_CAP * end
+memory m4_ifdef([<USE_TLSF>],sim-stack-,sim-stack) m4_ifdef([<USE_TLSF>],sizeof(ptr),sizeof(u64) SIM_STACK_CAP *) end
+m4_ifdef([<USE_TLSF>],
+proc sim-stack sim-stack- @ptr end
+sim-stack-count sizeof(u64) * malloc sim-stack- !ptr
+)
 
 proc sim-stack-push int in
   sim-stack-count @64 SIM_STACK_CAP >= if
@@ -1876,7 +1903,7 @@ in
   MAP_PRIVATE              // flags
   PROT_READ                // prot
   content @Str.count       // length
-  NULL                     // addr
+  m4_ifdef([<USE_TLSF>],statbuf @stat.st_size malloc,NULL)// addr
   mmap
   cast(ptr)
   content !Str.data
@@ -2206,6 +2233,10 @@ proc compile-file-into-ops ptr in
           memory x sizeof(Token) end
           x lexer lexer-next-token
           Op.EXTERN OP_CALL x Token.value + x push-op-f
+        else dup @Str "call-extern-raw" if*
+          memory x sizeof(Token) end
+          x lexer lexer-next-token
+          Op.EXTERN Op.RAW or OP_CALL x Token.value + x push-op-f
         else dup @Str "if*" streq if*
           parse-block-stack-top lnot if
             token Token.loc + eputloc ": ERROR: `if*` can only come after `else`, but found nothing\n" eputs
@@ -2546,7 +2577,45 @@ proc compile-file-into-ops ptr in
 
   // TODO: compile-file-into-ops does not clean up resources after itself
 end
-
+proc dump-ops-to-ir ptr in
+memory out-fd sizeof(u64) end
+  memory buf sizeof(u64) end
+  420 swap                    // mode
+  O_CREAT O_WRONLY or O_TRUNC or swap // flags
+  // TODO: the output file path should be based on the input file path
+     // pathname
+  // TODO: this is lame, let's just support negative numbers properly
+  0 100 - //AT_FDCWD
+  openat
+  8 ops-count out-fd !64 write
+  ops-count @64 sizeof(Op) * ops out-fd !64 write
+  ops-count @64 while dup 0 > do
+  dup sizeof(Op) * ops + dup Op.flags Op.EXTERN and cast(bool) if
+  Op.operand @Str Str.count buf !64 8 buf out-fd !64 write
+  Op.operand @Str out-fd !64 write
+  end
+  end
+end
+proc read-from-ir ptr in
+memory out-fd sizeof(u64) end
+  memory buf sizeof(u64) end
+  420 swap                    // mode
+  O_RDWR or O_TRUNC or swap // flags
+  // TODO: the output file path should be based on the input file path
+     // pathname
+  // TODO: this is lame, let's just support negative numbers properly
+  0 100 - //AT_FDCWD
+  openat
+  8 ops-count out-fd !64 read
+  ops-count @64 sizeof(Op) * ops out-fd !64 read
+  ops-count @64 while dup 0 > do
+  dup sizeof(Op) * ops + dup Op.flags Op.EXTERN and cast(bool) if
+   8 buf out-fd !64 read
+  Op.operand @Str Str.count buf swap !64
+  Op.operand @Str out-fd !64 read
+  end
+  end
+end
 proc summary in
   // TODO: lexer stats: tokens count, lines count, etc
   "Ops count:                    " puts ops-count @int putu "\n" puts
@@ -2571,7 +2640,7 @@ in
   "  SUBCOMMANDS:\n"                                                      fd @64 fputs
   "    sim <file>       Simulate the program.\n"                          fd @64 fputs
   // TODO: -r flag for com subcommand
-  "    com <file>       Compile the program\n"                            fd @64 fputs
+  "    com <file> [ir]       Compile the program\n"                            fd @64 fputs
   "    dump <file>      Dump the ops of the program\n"                    fd @64 fputs
   "    lex <file>       Produce lexical analysis of the file\n"           fd @64 fputs
   "    summary <file>   Print the summary of the program\n"               fd @64 fputs
@@ -2612,9 +2681,16 @@ proc main in
       "ERROR: no input file is provided for the `com` subcommand\n" eputs
       1 exit
     end
+    args 8 + @@ptr "-ir" str-to-cstr cstreq if
+    args @@ptr read-from-ir
+        args 16 + @@ptr compile-file-into-ops
+    else
+        args @@ptr compile-file-into-ops
+    end
 
-    args @@ptr compile-file-into-ops
-
+args 8 + @@ptr "-gen-ir" str-to-cstr cstreq args 16 + @@ptr "-gen-ir" str-to-cstr cstreq  or if
+"./output.porth-ir"c dump-ops-to-ir
+else
     X64 generate-nasm-linux-x86_64
         // TODO: implement tmp-rewind for this specific usecase
     tmp-clean
@@ -2640,7 +2716,7 @@ proc main in
       NULL        tmp-append-ptr
       cmd-echoed
     end
-
+end
     tmp-clean
   else args @@ptr "help"c cstreq if*
     program @ptr stdout usage
